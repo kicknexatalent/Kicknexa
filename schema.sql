@@ -1,0 +1,2 @@
+-- KICKNEXA PostgreSQL schema is created automatically by app.py.
+-- For production, move migrations into versioned files and run them through CI/CD.
