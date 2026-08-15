@@ -1,40 +1,42 @@
 import os
 from functools import wraps
 from urllib.parse import urlparse
-from flask import Flask, request, redirect, url_for, render_template, session, flash, jsonify
-from werkzeug.security import generate_password_hash, check_password_hash
+
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from flask import Flask, request, redirect, url_for, render_template, session, flash, jsonify
+from werkzeug.security import generate_password_hash, check_password_hash
 
-app = Flask(__name__, static_folder="static", static_url_path="/static")
-app.secret_key = os.environ.get("SECRET_KEY", "dev-only-change-me")
-
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "change-this-secret-in-production")
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is required. Add your PostgreSQL connection string in Render.")
+    raise RuntimeError("DATABASE_URL is required.")
 
 def get_db():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 def init_db():
-    schema = open("schema.sql", encoding="utf-8").read()
+    with open("schema.sql", encoding="utf-8") as f:
+        schema = f.read()
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(schema)
 
 def login_required(role=None):
-    def deco(fn):
+    def decorator(fn):
         @wraps(fn)
-        def wrapped(*args, **kwargs):
+        def wrapper(*args, **kwargs):
             if not session.get("user_id"):
                 flash("Please sign in first.")
                 return redirect(url_for("login", next=request.path))
             if role and session.get("role") != role:
-                flash("You do not have permission for that page.")
+                flash("You do not have permission to access that page.")
                 return redirect(url_for("home"))
             return fn(*args, **kwargs)
-        return wrapped
-    return deco
+        return wrapper
+    return decorator
 
 def valid_url(value):
     if not value:
@@ -90,7 +92,7 @@ def api_opportunities():
 def register_talent():
     if request.method == "POST":
         f = request.form
-        email = f.get("email","").strip().lower()
+        email = f.get("email", "").strip().lower()
         if not email or not f.get("password") or not f.get("display_name"):
             flash("Name, email and password are required.")
             return render_template("talent_form.html")
@@ -102,7 +104,7 @@ def register_talent():
                 with conn.cursor() as cur:
                     cur.execute("""
                         INSERT INTO users(email, password_hash, role)
-                        VALUES (%s,%s,'talent') RETURNING id
+                        VALUES (%s, %s, 'talent') RETURNING id
                     """, (email, generate_password_hash(f["password"])))
                     uid = cur.fetchone()["id"]
                     cur.execute("""
@@ -110,10 +112,12 @@ def register_talent():
                         (user_id, display_name, category, subcategory, country, city,
                          bio, showcase_url, social_url)
                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    """, (uid, f["display_name"].strip(), f["category"],
-                          f.get("subcategory"), f.get("country") or "Tanzania",
-                          f.get("city"), f.get("bio"), f.get("showcase_url"),
-                          f.get("social_url")))
+                    """, (
+                        uid, f["display_name"].strip(), f["category"],
+                        f.get("subcategory"), f.get("country") or "Tanzania",
+                        f.get("city"), f.get("bio"), f.get("showcase_url"),
+                        f.get("social_url")
+                    ))
             flash("Your KICKNEXA talent profile was created.")
             return redirect(url_for("login"))
         except psycopg2.errors.UniqueViolation:
@@ -124,7 +128,7 @@ def register_talent():
 def register_organization():
     if request.method == "POST":
         f = request.form
-        email = f.get("email","").strip().lower()
+        email = f.get("email", "").strip().lower()
         if not email or not f.get("password") or not f.get("name"):
             flash("Organization name, email and password are required.")
             return render_template("org_form.html")
@@ -135,17 +139,21 @@ def register_organization():
             with get_db() as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        INSERT INTO users(email,password_hash,role)
-                        VALUES (%s,%s,'organization') RETURNING id
+                        INSERT INTO users(email, password_hash, role)
+                        VALUES (%s, %s, 'organization') RETURNING id
                     """, (email, generate_password_hash(f["password"])))
                     uid = cur.fetchone()["id"]
                     cur.execute("""
                         INSERT INTO organizations
-                        (user_id,name,organization_type,country,city,website,social_url,description)
+                        (user_id, name, organization_type, country, city,
+                         website, social_url, description)
                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                    """, (uid, f["name"].strip(), f.get("organization_type"),
-                          f.get("country") or "Tanzania", f.get("city"), f.get("website"),
-                          f.get("social_url"), f.get("description")))
+                    """, (
+                        uid, f["name"].strip(), f.get("organization_type"),
+                        f.get("country") or "Tanzania", f.get("city"),
+                        f.get("website"), f.get("social_url"),
+                        f.get("description")
+                    ))
             flash("Organization registered. Your profile starts as pending verification.")
             return redirect(url_for("login"))
         except psycopg2.errors.UniqueViolation:
@@ -155,13 +163,16 @@ def register_organization():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        email = request.form.get("email","").strip().lower()
-        password = request.form.get("password","")
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
         with get_db() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id,email,password_hash,role FROM users WHERE email=%s", (email,))
+                cur.execute(
+                    "SELECT id, email, password_hash, role FROM users WHERE email=%s",
+                    (email,)
+                )
                 user = cur.fetchone()
-        if user and user["password_hash"] and check_password_hash(user["password_hash"], password):
+        if user and check_password_hash(user["password_hash"], password):
             session["user_id"] = user["id"]
             session["role"] = user["role"]
             session["email"] = user["email"]
@@ -183,6 +194,7 @@ def dashboard():
                 cur.execute("SELECT * FROM talent WHERE user_id=%s", (session["user_id"],))
                 profile = cur.fetchone()
         return render_template("talent_dashboard.html", profile=profile)
+
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM organizations WHERE user_id=%s", (session["user_id"],))
@@ -199,7 +211,8 @@ def talent_directory():
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id,display_name,category,subcategory,country,city,bio,showcase_url,verified
+                SELECT id, display_name, category, subcategory, country, city,
+                       bio, showcase_url, verified
                 FROM talent ORDER BY created_at DESC LIMIT 60
             """)
             talents = cur.fetchall()
@@ -210,9 +223,10 @@ def opportunities():
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT o.*, org.name organization_name, org.verified organization_verified
-                FROM opportunities o JOIN organizations org
-                ON org.id=o.organization_id
+                SELECT o.*, org.name AS organization_name,
+                       org.verified AS organization_verified
+                FROM opportunities o
+                JOIN organizations org ON org.id=o.organization_id
                 WHERE o.status='published'
                 ORDER BY o.created_at DESC
             """)
@@ -229,24 +243,31 @@ def post_opportunity():
     if not org:
         flash("Organization profile not found.")
         return redirect(url_for("dashboard"))
+
     if request.method == "POST":
         f = request.form
+        if f.get("application_url") and not valid_url(f["application_url"]):
+            flash("Application URL must start with http:// or https://.")
+            return render_template("opportunity_form.html")
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO opportunities
-                    (organization_id,title,category,subcategory,opportunity_type,country,city,
-                     age_category,description,requirements,application_url,contact_email,deadline,status)
+                    (organization_id, title, category, subcategory, opportunity_type,
+                     country, city, age_category, description, requirements,
+                     application_url, contact_email, deadline, status)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'published')
-                """, (org["id"], f["title"], f["category"], f.get("subcategory"),
-                      f["opportunity_type"], f.get("country") or "Tanzania", f.get("city"),
-                      f.get("age_category"), f["description"], f.get("requirements"),
-                      f.get("application_url"), f.get("contact_email"), f.get("deadline")))
+                """, (
+                    org["id"], f["title"], f["category"], f.get("subcategory"),
+                    f["opportunity_type"], f.get("country") or "Tanzania",
+                    f.get("city"), f.get("age_category"), f["description"],
+                    f.get("requirements"), f.get("application_url"),
+                    f.get("contact_email"), f.get("deadline") or None
+                ))
         flash("Opportunity published.")
         return redirect(url_for("dashboard"))
     return render_template("opportunity_form.html")
 
-# Initialize database on startup.
 init_db()
 
 if __name__ == "__main__":
