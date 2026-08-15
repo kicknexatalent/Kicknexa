@@ -1,12 +1,2 @@
-services:
-  - type: web
-    name: kicknexa
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
-    plan: free
-    envVars:
-      - key: DATABASE_URL
-        sync: false
-      - key: SECRET_KEY
-        generateValue: true
+
+Update Render configuration
